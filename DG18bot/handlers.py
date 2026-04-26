@@ -3,6 +3,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 from db import upsert_user, get_user, save_task, get_today_task, save_evening_log, get_streak
 from texts import t, random_motivation
+from telegram import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 
 # Conversation states
 CHOOSING_LANG = 0
@@ -13,14 +14,23 @@ WAITING_EVENING = 4
 
 
 def main_menu_keyboard(lang: str):
+    # Замени этот URL на адрес, где будет лежать твой index.html (например, GitHub Pages)
+    WEB_APP_URL = "https://your-username.github.io/checklist-repo/"
+
     if lang == "ru":
         keyboard = [
-            ["📝 Задача на сегодня", "✅ Вечерний чекин"],
+            [
+                KeyboardButton("📝 Задачи на сегодня", web_app=WebAppInfo(url=WEB_APP_URL)),
+                KeyboardButton("✅ Вечерний чекин")
+            ],
             ["ℹ️ Помощь", "⚙️ Настройки"],
         ]
     else:
         keyboard = [
-            ["📝 Today's task", "✅ Evening check-in"],
+            [
+                KeyboardButton("📝 Today's tasks", web_app=WebAppInfo(url=WEB_APP_URL)),
+                KeyboardButton("✅ Evening check-in")
+            ],
             ["ℹ️ Help", "⚙️ Settings"],
         ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
