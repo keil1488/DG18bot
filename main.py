@@ -26,9 +26,9 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-TOKEN = os.getenv("TOKEN", "8743923345:AAFdorSDswkdEAGz9Wp0Q6-3hZaAtDizjcY")
+# Токен берётся ТОЛЬКО из переменной окружения
+TOKEN = os.getenv("TOKEN")
 
-# Порт для HTTP API (веб-приложение отправляет сюда цели)
 API_PORT = int(os.getenv("API_PORT", "8080"))
 
 MENU_PATTERN = (
@@ -42,12 +42,10 @@ async def on_startup(app):
 
     scheduler = AsyncIOScheduler()
 
-    # Планируем утро/день/вечер для всех пользователей
     users = await get_all_users()
     for user in users:
         schedule_user(scheduler, app.bot, user)
 
-    # Запускаем проверку дедлайнов каждую минуту
     schedule_deadline_checker(scheduler, app.bot)
 
     scheduler.start()
@@ -56,9 +54,8 @@ async def on_startup(app):
 
 def main():
     if not TOKEN:
-        raise RuntimeError("TOKEN is not set!")
+        raise RuntimeError("TOKEN is not set! Add it to Railway environment variables.")
 
-    # ── Telegram bot ──────────────────────────────────────────────────────────
     tg_app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
 
     conv = ConversationHandler(
@@ -92,25 +89,21 @@ def main():
     tg_app.add_handler(CommandHandler("help", help_command))
     tg_app.add_handler(CommandHandler("restart", restart_command))
 
-    # ── HTTP API (aiohttp) ────────────────────────────────────────────────────
     api_app = create_app()
 
     async def run_all():
-        # Запускаем aiohttp-сервер
         runner = web.AppRunner(api_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", API_PORT)
         await site.start()
         logging.info(f"API server started on port {API_PORT}")
 
-        # Запускаем бота (polling)
         async with tg_app:
             await tg_app.initialize()
             await tg_app.start()
             await tg_app.updater.start_polling()
             logging.info("Bot is running...")
 
-            # Держим процесс живым
             try:
                 await asyncio.Event().wait()
             finally:
@@ -123,4 +116,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-я
