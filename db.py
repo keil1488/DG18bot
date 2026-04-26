@@ -1,12 +1,12 @@
 import aiosqlite
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
 
 DB_PATH = "bot.db"
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-        # Таблица пользователей
+        # 1. Таблица пользователей
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id        INTEGER PRIMARY KEY,
@@ -17,7 +17,7 @@ async def init_db():
                 evening_minute INTEGER DEFAULT 0
             )
         """)
-        # Таблица целей из Веб-приложения
+        # 2. Таблица целей из Веб-приложения (checklist)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS goals (
                 id           TEXT    PRIMARY KEY,
@@ -29,7 +29,7 @@ async def init_db():
                 notified     TEXT    DEFAULT ''
             )
         """)
-        # Таблица ежедневных задач (для утренних вопросов)
+        # 3. Таблица ежедневных задач (утренний вопрос)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_tasks (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +38,7 @@ async def init_db():
                 date     TEXT    NOT NULL
             )
         """)
-        # Логи вечерних чекинов
+        # 4. Таблица вечерних чекинов (логи)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS evening_logs (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,6 +49,93 @@ async def init_db():
             )
         """)
         await db.commit()
+
+# --- ФУНКЦИИ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ---
+
+async def get_all_users():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM users")
+        return await cursor.fetchall()
+
+async def get_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        return await cursor.fetchone()
+
+async def upsert_user(user_id: int, language: str = "ru", 
+                      morning_hour: int = 8, morning_minute: int = 0,
+                      evening_hour: int = 21, evening_minute: int = 0):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO users (user_id, language, morning_hour, morning_minute, evening_hour, evening_minute)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                language       = excluded.language,
+                morning_hour   = excluded.morning_hour,
+                morning_minute = excluded.morning_minute,
+                evening_hour   = excluded.evening_hour,
+                evening_minute = excluded.evening_minute
+        """, (user_id, language, morning_hour, morning_minute, evening_hour, evening_minute))
+        await db.commit()
+
+# --- ФУНКЦИИ ДЛЯ ЗАДАЧ (DAILY TASKS) ---
+
+async def save_task(user_id: int, task: str):
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO daily_tasks (user_id, task, date) VALUES (?, ?, ?)",
+            (user_id, task, today)
+        )
+        await db.commit()
+
+async def get_today_task(user_id: int):
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT task FROM daily_tasks WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1",
+            (user_id, today)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+# --- ФУНКЦИИ ДЛЯ ВЕЧЕРНИХ ЛОГОВ И СЕРИИ (STREAK) ---
+
+async def save_evening_log(user_id: int, completed: bool, note: str = ""):
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO evening_logs (user_id, date, completed, note) VALUES (?, ?, ?, ?)",
+            (user_id, today, int(completed), note)
+        )
+        await db.commit()
+
+async def get_streak(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT date FROM evening_logs
+            WHERE user_id = ? AND completed = 1
+            ORDER BY date DESC
+        """, (user_id,))
+        rows = await cursor.fetchall()
+
+    if not rows:
+        return 0
+
+    streak = 0
+    check_date = date.today()
+    for row in rows:
+        log_date = datetime.strptime(row[0], "%Y-%m-%d").date()
+        if log_date == check_date or log_date == check_date - timedelta(days=1):
+            streak += 1
+            check_date = log_date - timedelta(days=1)
+        else:
+            break
+    return streak
+
+# --- ФУНКЦИИ ДЛЯ ЦЕЛЕЙ (CHECKLIST) ---
 
 async def upsert_goal(user_id: int, goal_id: str, text: str, done: bool, deadline: int | None, created_at: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -77,33 +164,15 @@ async def was_notified(goal_id: str, label: str) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT notified FROM goals WHERE id = ?", (goal_id,))
         row = await cursor.fetchone()
-        return label in (row[0] or "").split(",") if row else False
+        if not row or not row[0]:
+            return False
+        return label in row[0].split(",")
 
 async def mark_notified(goal_id: str, label: str):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT notified FROM goals WHERE id = ?", (goal_id,))
         row = await cursor.fetchone()
-        curr = row[0] if row and row[0] else ""
-        new = f"{curr},{label}".strip(",")
-        await db.execute("UPDATE goals SET notified = ? WHERE id = ?", (new, goal_id))
+        current = row[0] if row and row[0] else ""
+        new_val = f"{current},{label}".strip(",")
+        await db.execute("UPDATE goals SET notified = ? WHERE id = ?", (new_val, goal_id))
         await db.commit()
-
-# Функции для получения данных (используются в scheduler.py)
-async def get_all_users():
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM users")
-        return await cursor.fetchall()
-
-async def get_user(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-        return await cursor.fetchone()
-
-async def get_today_task(user_id: int):
-    today = date.today().isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT task FROM daily_tasks WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1", (user_id, today))
-        row = await cursor.fetchone()
-        return row[0] if row else None
