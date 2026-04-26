@@ -1,9 +1,7 @@
-from dotenv import load_dotenv
-load_dotenv()
-
 import os
 import asyncio
 import logging
+from dotenv import load_dotenv
 from aiohttp import web
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -21,14 +19,14 @@ from handlers import (
 from scheduler import schedule_user, schedule_deadline_checker
 from api import create_app
 
+load_dotenv()
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-# Токен берётся ТОЛЬКО из переменной окружения
 TOKEN = os.getenv("TOKEN")
-
 API_PORT = int(os.getenv("API_PORT", "8080"))
 
 MENU_PATTERN = (
@@ -39,23 +37,20 @@ MENU_PATTERN = (
 
 async def on_startup(app):
     await init_db()
-
     scheduler = AsyncIOScheduler()
-
     users = await get_all_users()
     for user in users:
         schedule_user(scheduler, app.bot, user)
-
     schedule_deadline_checker(scheduler, app.bot)
-
     scheduler.start()
     app.scheduler = scheduler
 
 
 def main():
     if not TOKEN:
-        raise RuntimeError("TOKEN is not set! Add it to Railway environment variables.")
+        raise RuntimeError("TOKEN is not set!")
 
+    # Собираем приложение бота
     tg_app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
 
     conv = ConversationHandler(
@@ -81,29 +76,33 @@ def main():
             CommandHandler("cancel", cancel),
             CommandHandler("restart", restart_command),
             CommandHandler("help", help_command),
+            # Добавляем старт в фолбэки, чтобы можно было перезапустить из любого состояния
+            CommandHandler("start", start),
         ],
         allow_reentry=True,
     )
 
     tg_app.add_handler(conv)
+    # Дублируем глобальные команды
     tg_app.add_handler(CommandHandler("help", help_command))
     tg_app.add_handler(CommandHandler("restart", restart_command))
 
     api_app = create_app()
 
     async def run_all():
+        # Запуск API
         runner = web.AppRunner(api_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", API_PORT)
         await site.start()
-        logging.info(f"API server started on port {API_PORT}")
 
         async with tg_app:
             await tg_app.initialize()
+            # Удаляем вебхук, чтобы не было конфликтов
+            await tg_app.bot.delete_webhook(drop_pending_updates=True)
             await tg_app.start()
             await tg_app.updater.start_polling()
-            logging.info("Bot is running...")
-
+            logging.info("Bot & API started...")
             try:
                 await asyncio.Event().wait()
             finally:
