@@ -32,8 +32,8 @@ TOKEN = os.getenv("TOKEN")
 API_PORT = int(os.getenv("API_PORT", "8080"))
 
 MENU_PATTERN = (
-    "^(📝 Задача на сегодня|✅ Вечерний чекин|ℹ️ Помощь|⚙️ Настройки"
-    "|📝 Today's task|✅ Evening check-in|ℹ️ Help|⚙️ Settings)$"
+    "^(📝 Задачи на сегодня|📝 Задача на сегодня|✅ Вечерний чекин|ℹ️ Помощь|⚙️ Настройки"
+    "|📝 Today's tasks|📝 Today's task|✅ Evening check-in|ℹ️ Help|⚙️ Settings)$"
 )
 
 
