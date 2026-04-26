@@ -15,7 +15,7 @@ WAITING_EVENING = 4
 
 def main_menu_keyboard(lang: str):
     # Замени этот URL на адрес, где будет лежать твой index.html (например, GitHub Pages)
-    WEB_APP_URL = "https://your-username.github.io/checklist-repo/"
+    WEB_APP_URL = "https://keil1488.github.io/checklistdg18/"
 
     if lang == "ru":
         keyboard = [
