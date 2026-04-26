@@ -8,8 +8,8 @@ async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id     INTEGER PRIMARY KEY,
-                language    TEXT    DEFAULT 'ru',
+                user_id        INTEGER PRIMARY KEY,
+                language       TEXT    DEFAULT 'ru',
                 morning_hour   INTEGER DEFAULT 8,
                 morning_minute INTEGER DEFAULT 0,
                 evening_hour   INTEGER DEFAULT 21,
@@ -32,6 +32,18 @@ async def init_db():
                 date      TEXT    NOT NULL,
                 completed INTEGER NOT NULL,
                 note      TEXT
+            )
+        """)
+        # Таблица целей с дедлайнами из веб-приложения
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS goals (
+                id           TEXT    PRIMARY KEY,
+                user_id      INTEGER NOT NULL,
+                text         TEXT    NOT NULL,
+                done         INTEGER DEFAULT 0,
+                deadline     INTEGER,
+                created_at   INTEGER NOT NULL,
+                notified     TEXT    DEFAULT ''
             )
         """)
         await db.commit()
@@ -102,7 +114,6 @@ async def save_evening_log(user_id: int, completed: bool, note: str = ""):
 
 
 async def get_streak(user_id: int) -> int:
-    """Count consecutive days with completed tasks."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT date FROM evening_logs
@@ -125,3 +136,66 @@ async def get_streak(user_id: int) -> int:
         else:
             break
     return streak
+
+
+# ── GOALS (цели из веб-приложения) ──────────────────────────────────────────
+
+async def upsert_goal(user_id: int, goal_id: str, text: str,
+                      done: bool, deadline: int | None, created_at: int):
+    """Создать или обновить цель."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO goals (id, user_id, text, done, deadline, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                text       = excluded.text,
+                done       = excluded.done,
+                deadline   = excluded.deadline
+        """, (goal_id, user_id, text, int(done), deadline, created_at))
+        await db.commit()
+
+
+async def delete_goal(goal_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+        await db.commit()
+
+
+async def get_active_goals_with_deadline():
+    """Вернуть все незавершённые цели с дедлайном."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT * FROM goals
+            WHERE done = 0 AND deadline IS NOT NULL
+        """)
+        return await cursor.fetchall()
+
+
+async def mark_notified(goal_id: str, label: str):
+    """Сохранить метку об отправленном уведомлении, чтобы не дублировать."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT notified FROM goals WHERE id = ?", (goal_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return
+        notified = row[0] or ""
+        if label not in notified.split(","):
+            notified = (notified + "," + label).strip(",")
+            await db.execute(
+                "UPDATE goals SET notified = ? WHERE id = ?", (notified, goal_id)
+            )
+            await db.commit()
+
+
+async def was_notified(goal_id: str, label: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT notified FROM goals WHERE id = ?", (goal_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        return label in (row[0] or "").split(",")

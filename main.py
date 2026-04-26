@@ -2,7 +2,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import asyncio
 import logging
+from aiohttp import web
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     ConversationHandler, filters
@@ -16,14 +18,18 @@ from handlers import (
     help_command, restart_command, menu_button_handler, cancel,
     CHOOSING_LANG, SETTING_TIME, WAITING_MORNING_TASK, WAITING_EVENING
 )
-from scheduler import schedule_user
+from scheduler import schedule_user, schedule_deadline_checker
+from api import create_app
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-TOKEN = "8743923345:AAFdorSDswkdEAGz9Wp0Q6-3hZaAtDizjcY"
+TOKEN = os.getenv("TOKEN", "8743923345:AAFdorSDswkdEAGz9Wp0Q6-3hZaAtDizjcY")
+
+# Порт для HTTP API (веб-приложение отправляет сюда цели)
+API_PORT = int(os.getenv("API_PORT", "8080"))
 
 MENU_PATTERN = (
     "^(📝 Задача на сегодня|✅ Вечерний чекин|ℹ️ Помощь|⚙️ Настройки"
@@ -33,11 +39,16 @@ MENU_PATTERN = (
 
 async def on_startup(app):
     await init_db()
+
     scheduler = AsyncIOScheduler()
 
+    # Планируем утро/день/вечер для всех пользователей
     users = await get_all_users()
     for user in users:
         schedule_user(scheduler, app.bot, user)
+
+    # Запускаем проверку дедлайнов каждую минуту
+    schedule_deadline_checker(scheduler, app.bot)
 
     scheduler.start()
     app.scheduler = scheduler
@@ -45,9 +56,10 @@ async def on_startup(app):
 
 def main():
     if not TOKEN:
-        raise RuntimeError("TOKEN environment variable is not set!")
+        raise RuntimeError("TOKEN is not set!")
 
-    app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
+    # ── Telegram bot ──────────────────────────────────────────────────────────
+    tg_app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
 
     conv = ConversationHandler(
         entry_points=[
@@ -76,14 +88,39 @@ def main():
         allow_reentry=True,
     )
 
-    app.add_handler(conv)
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("restart", restart_command))
+    tg_app.add_handler(conv)
+    tg_app.add_handler(CommandHandler("help", help_command))
+    tg_app.add_handler(CommandHandler("restart", restart_command))
 
-    print("Bot is running...")
-    app.run_polling()
+    # ── HTTP API (aiohttp) ────────────────────────────────────────────────────
+    api_app = create_app()
+
+    async def run_all():
+        # Запускаем aiohttp-сервер
+        runner = web.AppRunner(api_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", API_PORT)
+        await site.start()
+        logging.info(f"API server started on port {API_PORT}")
+
+        # Запускаем бота (polling)
+        async with tg_app:
+            await tg_app.initialize()
+            await tg_app.start()
+            await tg_app.updater.start_polling()
+            logging.info("Bot is running...")
+
+            # Держим процесс живым
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await tg_app.updater.stop()
+                await tg_app.stop()
+                await runner.cleanup()
+
+    asyncio.run(run_all())
 
 
 if __name__ == "__main__":
     main()
-
+я
